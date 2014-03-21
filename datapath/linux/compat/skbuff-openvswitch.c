@@ -62,7 +62,7 @@ skb_zerocopy_headlen(const struct sk_buff *from)
  *	The `hlen` as calculated by skb_zerocopy_headlen() specifies the
  *	headroom in the `to` buffer.
  */
-void
+int
 skb_zerocopy(struct sk_buff *to, const struct sk_buff *from, int len, int hlen)
 {
 	int i, j = 0;
@@ -75,7 +75,7 @@ skb_zerocopy(struct sk_buff *to, const struct sk_buff *from, int len, int hlen)
 	/* dont bother with small payloads */
 	if (len <= skb_tailroom(to)) {
 		skb_copy_bits(from, 0, skb_put(to, len), len);
-		return;
+		return 0;
 	}
 
 	if (hlen) {
@@ -107,5 +107,7 @@ skb_zerocopy(struct sk_buff *to, const struct sk_buff *from, int len, int hlen)
 		j++;
 	}
 	skb_shinfo(to)->nr_frags = j;
+
+	return 0;
 }
 #endif

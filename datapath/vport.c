@@ -145,6 +145,8 @@ struct vport *ovs_vport_alloc(int priv_size, const struct vport_ops *ops,
 		return ERR_PTR(-ENOMEM);
 	}
 
+	ovs_init_per_cpu_t_stats(vport->percpu_stats);
+
 	spin_lock_init(&vport->stats_lock);
 
 	return vport;

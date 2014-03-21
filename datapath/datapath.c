@@ -70,14 +70,16 @@ static bool ovs_must_notify(struct genl_info *info,
 			    const struct genl_multicast_group *grp)
 {
 	return info->nlhdr->nlmsg_flags & NLM_F_ECHO ||
-		netlink_has_listeners(genl_info_net(info)->genl_sock, grp->id);
+		netlink_has_listeners_ovs(genl_info_net(info)->genl_sock, grp, 0);
 }
+
+static struct genl_family dp_packet_genl_family;
 
 static void ovs_notify(struct sk_buff *skb, struct genl_info *info,
 		       struct genl_multicast_group *grp)
 {
-	genl_notify(skb, genl_info_net(info), info->snd_portid,
-		    grp->id, info->nlhdr, GFP_KERNEL);
+	genl_notify(&dp_packet_genl_family, skb, genl_info_net(info),
+		    info->snd_portid, 0, info->nlhdr, GFP_KERNEL);
 }
 
 /**
@@ -479,7 +481,9 @@ static int queue_userspace_packet(struct datapath *dp, struct sk_buff *skb,
 	}
 	nla->nla_len = nla_attr_size(skb->len);
 
-	skb_zerocopy(user_skb, skb, skb->len, hlen);
+	err = skb_zerocopy(user_skb, skb, skb->len, hlen);
+	if (err)
+		goto out;
 
 	/* Pad OVS_PACKET_ATTR_PACKET if linear copy was performed */
 	if (!(dp->user_features & OVS_DP_F_UNALIGNED)) {
@@ -493,6 +497,9 @@ static int queue_userspace_packet(struct datapath *dp, struct sk_buff *skb,
 
 	err = genlmsg_unicast(ovs_dp_get_net(dp), user_skb, upcall_info->portid);
 out:
+	if (err)
+		skb_tx_error(skb);
+
 	kfree_skb(nskb);
 	return err;
 }
@@ -910,9 +917,8 @@ static int ovs_flow_cmd_new_or_set(struct sk_buff *skb, struct genl_info *info)
 		if (!IS_ERR(reply))
 			ovs_notify(reply, info, &ovs_dp_flow_multicast_group);
 		else
-			netlink_set_err(sock_net(skb->sk)->genl_sock, 0,
-					ovs_dp_flow_multicast_group.id,
-					PTR_ERR(reply));
+			genl_set_err(&dp_flow_genl_family, sock_net(skb->sk), 0,
+				     0, PTR_ERR(reply));
 	}
 	return 0;
 
@@ -1244,6 +1250,8 @@ static int ovs_dp_cmd_new(struct sk_buff *skb, struct genl_info *info)
 		goto err_destroy_table;
 	}
 
+	ovs_init_per_cpu_dp_stats(dp->stats_percpu);
+
 	dp->ports = kmalloc(DP_VPORT_HASH_BUCKETS * sizeof(struct hlist_head),
 			    GFP_KERNEL);
 	if (!dp->ports) {
@@ -1489,7 +1497,7 @@ static const struct nla_policy vport_policy[OVS_VPORT_ATTR_MAX + 1] = {
 	[OVS_VPORT_ATTR_OPTIONS] = { .type = NLA_NESTED },
 };
 
-static struct genl_family dp_vport_genl_family = {
+struct genl_family dp_vport_genl_family = {
 	.id = GENL_ID_GENERATE,
 	.hdrsize = sizeof(struct ovs_header),
 	.name = OVS_VPORT_FAMILY,
@@ -1892,19 +1900,13 @@ static int dp_register_genl(void)
 
 	n_registered = 0;
 	for (i = 0; i < ARRAY_SIZE(dp_genl_families); i++) {
-		const struct genl_family_and_ops *f = &dp_genl_families[i];
+		const struct genl_family_and_ops_ovs *f =
+			(struct genl_family_and_ops_ovs *)&dp_genl_families[i];
 
-		err = genl_register_family_with_ops(f->family, f->ops,
-						    f->n_ops);
+		err = genl_register_family_ovs(f);
 		if (err)
 			goto error;
 		n_registered++;
-
-		if (f->group) {
-			err = genl_register_mc_group(f->family, f->group);
-			if (err)
-				goto error;
-		}
 	}
 
 	return 0;

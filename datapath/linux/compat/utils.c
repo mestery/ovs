@@ -6,6 +6,7 @@
 #include <linux/mm.h>
 #include <linux/net.h>
 #include <net/checksum.h>
+#include <net/ip.h>
 #include <linux/string.h>
 #include <linux/types.h>
 #include <linux/percpu.h>
@@ -38,6 +39,7 @@ void inet_proto_csum_replace16(__sum16 *sum, struct sk_buff *skb,
 }
 #endif
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,13,0)
 bool __net_get_random_once(void *buf, int nbytes, bool *done,
 			   atomic_t *done_key)
 {
@@ -58,3 +60,30 @@ bool __net_get_random_once(void *buf, int nbytes, bool *done,
 
 	return true;
 }
+#endif
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,13,0)
+#include "datapath.h"
+#include "vport.h"
+void ovs_init_per_cpu_dp_stats(struct dp_stats_percpu *stats)
+{
+	int i;
+
+	for_each_possible_cpu(i) {
+		struct dp_stats_percpu *dpath_stats;
+		dpath_stats = per_cpu_ptr(stats, i);
+		u64_stats_init(&dpath_stats->sync);
+	}
+}
+
+void ovs_init_per_cpu_t_stats(struct pcpu_tstats *stats)
+{
+	int i;
+
+	for_each_possible_cpu(i) {
+		struct pcpu_tstats *vport_stats;
+		vport_stats = per_cpu_ptr(stats, i);
+		u64_stats_init(&vport_stats->syncp);
+	}
+}
+#endif
