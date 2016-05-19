@@ -951,6 +951,44 @@
           </p>
         </dd>
 
+        <dt><code>ct_dnat;</code></dt>
+        <dt><code>ct_dnat(<var>IP</var>);</code></dt>
+        <dd>
+          <p>
+            <code>ct_dnat</code> sends the packet through the DNAT zone to
+            unDNAT any packet that was DNATed in a different direction.
+          </p>
+          <p>
+            <code>ct_dnat(<var>IP</var>)</code> sends the packet through the
+            DNAT zone to change the destination IP address of the packet to
+            the one provided inside the parenthesis and commits the connection.
+          </p>
+          <p>
+            Both <code>ct_dnat</code> and <code>ct_dnat(<var>IP</var>)</code>
+            recirculate the packet in the datapath.
+          </p>
+        </dd>
+
+        <dt><code>ct_snat;</code></dt>
+        <dt><code>ct_snat(<var>IP</var>);</code></dt>
+        <dd>
+          <p>
+            <code>ct_snat</code> sends the packet through the SNAT zone to
+            unSNAT any packet that was SNATed in a different direction.
+          </p>
+          <p>
+            <code>ct_snat(<var>IP</var>)</code> sends the packet through the
+            SNAT zone to change the source IP address of the packet to
+            the one provided inside the parenthesis and commits the connection.
+          </p>
+          <p>
+            <code>ct_snat</code> does not recirculate the packet in the
+            datapath and hence should be followed by a <code>next;</code>
+            action. <code>ct_snat(<var>IP</var>)</code> does
+            recirculate the packet in the datapath.
+          </p>
+        </dd>
+
         <dt><code>arp { <var>action</var>; </code>...<code> };</code></dt>
         <dd>
           <p>

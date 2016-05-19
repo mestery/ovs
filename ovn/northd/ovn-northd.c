@@ -105,12 +105,15 @@ enum ovn_stage {
     /* Logical router ingress stages. */                              \
     PIPELINE_STAGE(ROUTER, IN,  ADMISSION,   0, "lr_in_admission")    \
     PIPELINE_STAGE(ROUTER, IN,  IP_INPUT,    1, "lr_in_ip_input")     \
-    PIPELINE_STAGE(ROUTER, IN,  IP_ROUTING,  2, "lr_in_ip_routing")   \
-    PIPELINE_STAGE(ROUTER, IN,  ARP_RESOLVE, 3, "lr_in_arp_resolve")  \
-    PIPELINE_STAGE(ROUTER, IN,  ARP_REQUEST, 4, "lr_in_arp_request")  \
+    PIPELINE_STAGE(ROUTER, IN,  SNAT,        2, "lr_in_snat")         \
+    PIPELINE_STAGE(ROUTER, IN,  DNAT,        3, "lr_in_dnat")         \
+    PIPELINE_STAGE(ROUTER, IN,  IP_ROUTING,  4, "lr_in_ip_routing")   \
+    PIPELINE_STAGE(ROUTER, IN,  ARP_RESOLVE, 5, "lr_in_arp_resolve")  \
+    PIPELINE_STAGE(ROUTER, IN,  ARP_REQUEST, 6, "lr_in_arp_request")  \
                                                                       \
     /* Logical router egress stages. */                               \
-    PIPELINE_STAGE(ROUTER, OUT, DELIVERY,    0, "lr_out_delivery")
+    PIPELINE_STAGE(ROUTER, OUT, SNAT,      0, "lr_out_snat")          \
+    PIPELINE_STAGE(ROUTER, OUT, DELIVERY,  1, "lr_out_delivery")
 
 #define PIPELINE_STAGE(DP_TYPE, PIPELINE, STAGE, TABLE, NAME)   \
     S_##DP_TYPE##_##PIPELINE##_##STAGE                          \
@@ -1965,11 +1968,166 @@ build_lrouter_flows(struct hmap *datapaths, struct hmap *ports,
         free(match);
         free(actions);
 
+        /* ARP handling for virtual IP addresses.
+         *
+         * DNAT IP addresses are virtual IP addresses that need ARP
+         * handling. */
+        struct smap_node *node;
+        SMAP_FOR_EACH(node, &op->od->nbr->dnat) {
+            ovs_be32 ip;
+            if (!ip_parse(node->key, &ip) || !ip) {
+                static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 1);
+                VLOG_WARN_RL(&rl, "bad ip address %s in dnat configuration"
+                             "for router %s", node->key, op->key);
+                continue;
+            }
+
+            match = xasprintf(
+                "inport == %s && arp.tpa == "IP_FMT" && arp.op == 1",
+                op->json_key, IP_ARGS(ip));
+            actions = xasprintf(
+                "eth.dst = eth.src; "
+                "eth.src = "ETH_ADDR_FMT"; "
+                "arp.op = 2; /* ARP reply */ "
+                "arp.tha = arp.sha; "
+                "arp.sha = "ETH_ADDR_FMT"; "
+                "arp.tpa = arp.spa; "
+                "arp.spa = "IP_FMT"; "
+                "outport = %s; "
+                "inport = \"\"; /* Allow sending out inport. */ "
+                "output;",
+                ETH_ADDR_ARGS(op->mac),
+                ETH_ADDR_ARGS(op->mac),
+                IP_ARGS(ip),
+                op->json_key);
+            ovn_lflow_add(lflows, op->od, S_ROUTER_IN_IP_INPUT, 90,
+                          match, actions);
+            free(match);
+            free(actions);
+        }
+
         /* Drop IP traffic to this router. */
         match = xasprintf("ip4.dst == "IP_FMT, IP_ARGS(op->ip));
         ovn_lflow_add(lflows, op->od, S_ROUTER_IN_IP_INPUT, 60,
                       match, "drop;");
         free(match);
+    }
+
+    /* Ingress SNAT. This is for already established connections' reverse
+     * traffic. i.e., SNAT has already been done in egress pipeline and now
+     * the packet has entered the ingress pipeline as part of a reply.
+     * We undo the SNAT here.
+     *
+     * Undoing SNAT has to happen before DNAT processing. This is because when
+     * the packet was DNATed in ingress pipeline, it did not know about the
+     * possibility of eventual additional SNAT in egress pipeline. */
+    HMAP_FOR_EACH (od, key_node, datapaths) {
+        if (!od->nbr) {
+            continue;
+        }
+
+        /* Packets are allowed by default. */
+        ovn_lflow_add(lflows, od, S_ROUTER_IN_SNAT, 0, "1", "next;");
+
+        /* SNAT rules are only valid on non-distributed routers. */
+        if (!smap_get(&od->nbr->options, "chassis")) {
+            continue;
+        }
+
+        struct smap_node *node;
+        SMAP_FOR_EACH(node, &od->nbr->snat) {
+            ovs_be32 ip, mask;
+
+            char *error = ip_parse_masked(node->key, &ip, &mask);
+            if (error) {
+                static struct vlog_rate_limit rl
+                        = VLOG_RATE_LIMIT_INIT(5, 1);
+                VLOG_WARN_RL(&rl, "bad ip network or ip %s for snat",
+                             node->key);
+                continue;
+            }
+
+            error = ip_parse_masked(node->value, &ip, &mask);
+            if (error || mask != OVS_BE32_MAX) {
+                static struct vlog_rate_limit rl
+                        = VLOG_RATE_LIMIT_INIT(5, 1);
+                VLOG_WARN_RL(&rl, "bad ip address %s for snat", node->value);
+                continue;
+            }
+
+            char *match;
+            match = xasprintf("ip && ip4.dst == %s", node->value);
+            ovn_lflow_add(lflows, od, S_ROUTER_IN_SNAT, 100,
+                          match, "ct_snat; next;");
+            free(match);
+        }
+    }
+
+    /* Ingress DNAT. Packets enter the pipeline with destination IP address
+     * that needs to be DNATted from a virtual IP address to a real
+     * IP address.  Packets in the reverse direction get unDNATed. */
+    HMAP_FOR_EACH (od, key_node, datapaths) {
+        if (!od->nbr) {
+            continue;
+        }
+
+        /* Packets are allowed by default. */
+        ovn_lflow_add(lflows, od, S_ROUTER_IN_DNAT, 0, "1", "next;");
+
+        /* DNAT rules are only valid on non-distributed routers. */
+        if (!smap_get(&od->nbr->options, "chassis")) {
+            continue;
+        }
+
+        struct smap_node *node;
+        SMAP_FOR_EACH(node, &od->nbr->dnat) {
+            char *match, *actions;
+            ovs_be32 ip, mask;
+
+            char *error = ip_parse_masked(node->key, &ip, &mask);
+            if (error || mask != OVS_BE32_MAX) {
+                static struct vlog_rate_limit rl
+                        = VLOG_RATE_LIMIT_INIT(5, 1);
+                VLOG_WARN_RL(&rl, "bad ip address key %s for dnat", node->key);
+                continue;
+            }
+
+            error = ip_parse_masked(node->value, &ip, &mask);
+            if (error || mask != OVS_BE32_MAX) {
+                static struct vlog_rate_limit rl
+                        = VLOG_RATE_LIMIT_INIT(5, 1);
+                VLOG_WARN_RL(&rl, "bad ip address value %s for dnat",
+                             node->value);
+                continue;
+            }
+
+            /* Packet when it goes from the initiator to destination.
+             * We need to zero the inport because the router can
+             * send the packet back through the same interface. */
+            match = xasprintf("ip && ip4.dst == %s", node->key);
+            actions = xasprintf("inport = \"\"; ct_dnat(%s);", node->value);
+            ovn_lflow_add(lflows, od, S_ROUTER_IN_DNAT, 100,
+                          match, actions);
+            free(match);
+            free(actions);
+        }
+
+        /* Re-circulate every other packet through the DNAT zone.
+         * This helps with 2 things.
+         *
+         * 1. Any packet that needs to be unDNATed in the reverse
+         * direction gets unDNATed. Ideally this could be done in
+         * the egress pipeline. But since the gateway router
+         * does not have any feature that depends on the source
+         * ip address being virtual IP address for IP routing,
+         * we can do it here, saving a future re-circulation.
+         *
+         * 2. Any packet that was sent through SNAT zone in the
+         * previous table automatically gets re-circulated to get
+         * back the new destination IP address that is needed for
+         * routing in the openflow pipeline. */
+        ovn_lflow_add(lflows, od, S_ROUTER_IN_DNAT, 50,
+                      "ip", "inport = \"\"; ct_dnat;");
     }
 
     /* Logical router ingress table 2: IP Routing.
@@ -2172,7 +2330,53 @@ build_lrouter_flows(struct hmap *datapaths, struct hmap *ports,
         ovn_lflow_add(lflows, od, S_ROUTER_IN_ARP_REQUEST, 0, "1", "output;");
     }
 
-    /* Logical router egress table 0: Delivery (priority 100).
+    /* Egress SNAT. Packets enter the pipeline with source ip address
+     * that needs to be SNATted to a virtual ip address. */
+    HMAP_FOR_EACH (od, key_node, datapaths) {
+        if (!od->nbr) {
+            continue;
+        }
+
+        /* Packets are allowed by default. */
+        ovn_lflow_add(lflows, od, S_ROUTER_OUT_SNAT, 0, "1", "next;");
+
+        /* SNAT rules are only valid on non-distributed routers. */
+        if (!smap_get(&od->nbr->options, "chassis")) {
+            continue;
+        }
+
+        struct smap_node *node;
+        SMAP_FOR_EACH(node, &od->nbr->snat) {
+            char *match, *actions;
+            ovs_be32 ip, mask;
+
+            char *error = ip_parse_masked(node->key, &ip, &mask);
+            if (error) {
+                static struct vlog_rate_limit rl
+                        = VLOG_RATE_LIMIT_INIT(5, 1);
+                VLOG_WARN_RL(&rl, "bad ip or ip network %s in snat key",
+                             node->key);
+                continue;
+            }
+
+            error = ip_parse_masked(node->value, &ip, &mask);
+            if (error || mask != OVS_BE32_MAX) {
+                static struct vlog_rate_limit rl
+                        = VLOG_RATE_LIMIT_INIT(5, 1);
+                VLOG_WARN_RL(&rl, "bad ip address %s for snat", node->value);
+                continue;
+            }
+
+            match = xasprintf("ip && ip4.src == %s", node->key);
+            actions = xasprintf("ct_snat(%s);", node->value);
+            ovn_lflow_add(lflows, od, S_ROUTER_OUT_SNAT, 100,
+                          match, actions);
+            free(match);
+            free(actions);
+        }
+    }
+
+    /* Logical router egress table 1: Delivery (priority 100).
      *
      * Priority 100 rules deliver packets to enabled logical ports. */
     HMAP_FOR_EACH (op, key_node, ports) {

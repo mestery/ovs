@@ -631,18 +631,41 @@
       router has all ingress and egress traffic dropped.
     </column>
 
+    <column name="dnat">
+      A map of externally visible IP address to their corresponding IP
+      addresses in the logical space.  The externally visible IP address
+      is DNATed to the IP address in the logical space.  DNAT only works
+      on routers that are non-distributed.
+    </column>
+
+    <column name="snat">
+      A map of IP network (e.g 192.168.1.0/24) or an IP address to another
+      IP address.  All IP packets with their source IP address that either
+      matches the key or is in the provided network is SNATed
+      into the IP address in the value.  SNAT only works on routers that are
+      non-distributed.
+    </column>
+
     <group title="Options">
       <p>
         Additional options for the logical router.
       </p>
 
       <column name="options" key="chassis">
-        If set, indicates that the logical router in question is
-        non-distributed and resides in the set chassis. The same
-        value is also used by <code>ovn-controller</code> to
-        uniquely identify the chassis in the OVN deployment and
-        comes from <code>external_ids:system-id</code> in the
-        <code>Open_vSwitch</code> table of Open_vSwitch database.
+        <p>
+          If set, indicates that the logical router in question is
+          non-distributed and resides in the set chassis.  The same
+          value is also used by <code>ovn-controller</code> to
+          uniquely identify the chassis in the OVN deployment and
+          comes from <code>external_ids:system-id</code> in the
+          <code>Open_vSwitch</code> table of Open_vSwitch database.
+        </p>
+
+        <p>
+          The non-distributed router (also known as Gateway router)
+          can only be connected to a distributed router via a switch
+          if SNAT and DNAT is to be configured in the Gateway router.
+        </p>
       </column>
     </group>
     
