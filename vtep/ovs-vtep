@@ -989,8 +989,7 @@ def handle_physical():
             if Switch_Bindings[b] == ls_name:
                 continue
             else:
-                del_switch_binding(switch_binding,
-                                   Lswitches[Switch_Bindings[b]])
+                del_switch_binding(b, Lswitches[Switch_Bindings[b]])
 
         Switch_Bindings[b] = ls_name
         lr.add_switch_binding(b, ls)
