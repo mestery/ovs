@@ -91,6 +91,10 @@ static struct vtep_ctl_lrouter *find_lrouter(struct vtep_ctl_context *,
                                              const char *name,
                                              bool must_exist);
 
+static struct vtep_ctl_lrouter *find_lrouter(struct vtep_ctl_context *,
+                                             const char *name,
+                                             bool must_exist);
+
 int
 main(int argc, char *argv[])
 {
@@ -485,6 +489,15 @@ struct vtep_ctl_lrouter {
     char *name;
 };
 
+struct vtep_ctl_lrouter {
+    const struct vteprec_logical_router *lr_cfg;
+    char *name;
+    struct shash ucast_local;   /* Maps from mac to vteprec_ucast_macs_local. */
+    struct shash ucast_remote;  /* Maps from mac to vteprec_ucast_macs_remote.*/
+    struct shash mcast_local;   /* Maps from mac to vtep_ctl_mcast_mac. */
+    struct shash mcast_remote;  /* Maps from mac to vtep_ctl_mcast_mac. */
+};
+
 struct vtep_ctl_mcast_mac {
     const struct vteprec_mcast_macs_local *local_cfg;
     const struct vteprec_mcast_macs_remote *remote_cfg;
@@ -612,6 +625,32 @@ del_cached_lswitch(struct vtep_ctl_context *ctx, struct vtep_ctl_lswitch *ls)
     shash_find_and_delete(&ctx->lswitches, ls->name);
     free(ls->name);
     free(ls);
+}
+
+static struct vtep_ctl_lrouter *
+add_lrouter_to_cache(struct vtep_ctl_context *vtepctl_ctx,
+                     const struct vteprec_logical_router *lr_cfg)
+{
+    struct vtep_ctl_lrouter *lr = xmalloc(sizeof *lr);
+    lr->lr_cfg = lr_cfg;
+    lr->name = xstrdup(lr_cfg->name);
+    shash_add(&vtepctl_ctx->lrouters, lr->name, lr);
+    shash_init(&lr->ucast_local);
+    shash_init(&lr->ucast_remote);
+    shash_init(&lr->mcast_local);
+    shash_init(&lr->mcast_remote);
+    return lr;
+}
+
+static void
+del_cached_lrouter(struct vtep_ctl_context *ctx, struct vtep_ctl_lrouter *lr)
+{
+    if (lr->lr_cfg) {
+        vteprec_logical_router_delete(lr->lr_cfg);
+    }
+    shash_find_and_delete(&ctx->lrouters, lr->name);
+    free(lr->name);
+    free(lr);
 }
 
 static void
@@ -945,6 +984,7 @@ vtep_ctl_context_populate_cache(struct ctl_context *ctx)
     sset_destroy(&ports);
 
     sset_init(&lswitches);
+    sset_init(&lrouters);
     VTEPREC_LOGICAL_SWITCH_FOR_EACH (ls_cfg, ctx->idl) {
         if (!sset_add(&lswitches, ls_cfg->name)) {
             VLOG_WARN("%s: database contains duplicate logical switch name",
@@ -956,6 +996,16 @@ vtep_ctl_context_populate_cache(struct ctl_context *ctx)
     sset_destroy(&lswitches);
 
     sset_init(&lrouters);
+    VTEPREC_LOGICAL_ROUTER_FOR_EACH (lr_cfg, ctx->idl) {
+        if (!sset_add(&lrouters, lr_cfg->name)) {
+            VLOG_WARN("%s: database contains duplicate logical router name",
+                      lr_cfg->name);
+            continue;
+        }
+        add_lrouter_to_cache(vtepctl_ctx, lr_cfg);
+    }
+    sset_destroy(&lrouters);
+
     VTEPREC_LOGICAL_ROUTER_FOR_EACH (lr_cfg, ctx->idl) {
         if (!sset_add(&lrouters, lr_cfg->name)) {
             VLOG_WARN("%s: database contains duplicate logical router name",
@@ -1648,6 +1698,64 @@ cmd_lr_exists(struct ctl_context *ctx)
     }
 }
 
+static struct vtep_ctl_lrouter *
+find_lrouter(struct vtep_ctl_context *vtepctl_ctx,
+             const char *name, bool must_exist)
+{
+    struct vtep_ctl_lrouter *lr;
+
+    ovs_assert(vtepctl_ctx->cache_valid);
+
+    lr = shash_find_data(&vtepctl_ctx->lrouters, name);
+    if (must_exist && !lr) {
+        ctl_fatal("no logical router named %s", name);
+    }
+    return lr;
+}
+
+static void
+cmd_add_lr(struct ctl_context *ctx)
+{
+    struct vtep_ctl_context *vtepctl_ctx = vtep_ctl_context_cast(ctx);
+    const char *lr_name = ctx->argv[1];
+    bool may_exist = shash_find(&ctx->options, "--may-exist") != NULL;
+    struct vteprec_logical_router *lr;
+
+    vtep_ctl_context_populate_cache(ctx);
+    if (find_lrouter(vtepctl_ctx, lr_name, false)) {
+        if (!may_exist) {
+            ctl_fatal("cannot create logical switch %s because it "
+                      "already exists", lr_name);
+        }
+        return;
+    }
+
+    lr = vteprec_logical_router_insert(ctx->txn);
+    vteprec_logical_router_set_name(lr, lr_name);
+
+    vtep_ctl_context_invalidate_cache(ctx);
+}
+
+static void
+del_lrouter(struct vtep_ctl_context *vtepctl_ctx, struct vtep_ctl_lrouter *lr)
+{
+    del_cached_lrouter(vtepctl_ctx, lr);
+}
+
+static void
+cmd_del_lr(struct ctl_context *ctx)
+{
+    struct vtep_ctl_context *vtepctl_ctx = vtep_ctl_context_cast(ctx);
+    bool must_exist = !shash_find(&ctx->options, "--if-exists");
+    struct vtep_ctl_lrouter *lr;
+
+    vtep_ctl_context_populate_cache(ctx);
+    lr = find_lrouter(vtepctl_ctx, ctx->argv[1], must_exist);
+    if (lr) {
+        del_lrouter(vtepctl_ctx, lr);
+    }
+}
+
 static void
 add_ucast_entry(struct ctl_context *ctx, bool local)
 {
@@ -2241,6 +2349,10 @@ static const struct ctl_table_class tables[] = {
      {{NULL, NULL, NULL},
       {NULL, NULL, NULL}}},
 
+    {&vteprec_table_logical_router,
+     {{&vteprec_table_logical_router, &vteprec_logical_router_col_name, NULL},
+      {NULL, NULL, NULL}}},
+
     {NULL, {{NULL, NULL, NULL}, {NULL, NULL, NULL}}}
 };
 
@@ -2506,6 +2618,10 @@ static const struct ctl_command_syntax vtep_commands[] = {
     {"del-lr", 1, 1, NULL, pre_get_info, cmd_del_lr, NULL, "--if-exists", RW},
     {"list-lr", 0, 0, NULL, pre_get_info, cmd_list_lr, NULL, "", RO},
     {"lr-exists", 1, 1, NULL, pre_get_info, cmd_lr_exists, NULL, "", RO},
+
+    /* Logical Router commands. */
+    {"add-lr", 1, 1, NULL, pre_get_info, cmd_add_lr, NULL, "--may-exist", RW},
+    {"del-lr", 1, 1, NULL, pre_get_info, cmd_del_lr, NULL, "--if-exists", RW},
 
     /* MAC binding commands. */
     {"add-ucast-local", 3, 4, NULL, pre_get_info, cmd_add_ucast_local, NULL,
