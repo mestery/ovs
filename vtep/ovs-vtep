@@ -88,8 +88,6 @@ class Logical_Router(object):
     def __init__(self, lr_name):
         global lr_count
         self.name = lr_name
-        #lr_count += 1
-        #self.short_name = "vtep_lr" + str(lr_count)
         self.short_name = "vtep_" + lr_name
         vlog.info("creating lrouter %s (%s)" % (self.name, self.short_name))
         self.ports = {}
@@ -122,12 +120,13 @@ class Logical_Router(object):
                   % (self.short_name, ",".join(flood_ports)))
 
     def run(self):
-        #vlog.info("start lrouter running")
+        # vlog.info("start lrouter running")
         self.update_lif_macs()
         self.update_forwarding_macs()
 
     def update_lif_macs(self):
-        lif_pl_uuid = vtep_ctl("--columns=_uuid find Physical_Locator dst_ip=127.0.0.1").partition(":")[2].strip()
+        lif_pl_uuid = vtep_ctl("--columns=_uuid find Physical_Locator "
+                               "dst_ip=127.0.0.1").partition(":")[2].strip()
         new_lifs = set()
 
         # update lif macs
@@ -138,7 +137,8 @@ class Logical_Router(object):
 
             ls_name = Switch_Bindings[switch_binding]
             ls_uuid = get_logical_switch_uuid(ls_name)
-            lif_mac_column = vtep_ctl("--columns=MAC find Ucast_Macs_Remote logical_switch=%s locator=%s"
+            lif_mac_column = vtep_ctl("--columns=MAC find Ucast_Macs_Remote "
+                                      "logical_switch=%s locator=%s"
                                       % (ls_uuid, lif_pl_uuid))
 
             if not lif_mac_column:
@@ -155,7 +155,8 @@ class Logical_Router(object):
                     continue
                 else:
                     del self.lifs[lif]
-                    ovs_ofctl("del-flow %s ip,nw_dst=%s" % (self.short_name, lif_ip_mask))
+                    ovs_ofctl("del-flow %s ip,nw_dst=%s" % (self.short_name,
+                                                            lif_ip_mask))
 
             self.lifs[lif] = lif_mac
 
@@ -166,28 +167,35 @@ class Logical_Router(object):
             # create ARP flow table
             ovs_ofctl("add-flow %s table=1,dl_type=0x0806,nw_dst=%s,actions="
                       "move:NXM_OF_ETH_SRC[]->NXM_OF_ETH_DST[],mod_dl_src:%s,"
-                      "load:0x2->NXM_OF_ARP_OP[],move:NXM_NX_ARP_SHA[]->NXM_NX_ARP_THA[],"
+                      "load:0x2->NXM_OF_ARP_OP[],move:NXM_NX_ARP_SHA[]->"
+                      "NXM_NX_ARP_THA[],"
                       "move:NXM_OF_ARP_SPA[]->NXM_OF_ARP_TPA[],"
                       "load:%s->NXM_NX_ARP_SHA[],"
                       "load:%s->NXM_OF_ARP_SPA[],in_port"
-                      % (self.short_name, lif_ip, lif_mac, lif_mac_hex, lif_ip_hex))
+                      % (self.short_name, lif_ip, lif_mac, lif_mac_hex,
+                         lif_ip_hex))
 
-            # don't flood arp request from same subnet (except gateway) to other lif
-            ovs_ofctl("add-flow %s table=1,priority=1,in_port=%s,dl_type=0x0806,nw_dst=%s,action=drop"
+            # don't flood arp request from same subnet (except gateway) to
+            # other lif
+            ovs_ofctl("add-flow %s table=1,priority=1,in_port=%s,dl_type="
+                      "0x0806,nw_dst=%s,action=drop"
                       % (self.short_name, self.ports[lif_port_r], lif_ip_mask))
 
-            ovs_ofctl("add-flow %s table=2,priority=1,dl_type=0x0800,nw_dst=%s,action=mod_dl_src=%s,dec_ttl,resubmit(,3)"
+            ovs_ofctl("add-flow %s table=2,priority=1,dl_type=0x0800,"
+                      "nw_dst=%s,action=mod_dl_src=%s,dec_ttl,resubmit(,3)"
                       % (self.short_name, lif_ip_mask, lif_mac))
 
         dead_lifs = set(self.lifs.keys()).difference(new_lifs)
         for lif in dead_lifs:
             del self.lifs[lif]
             lif_ip_mask = lif.strip("\"").partition("(")[2].strip(")")
-            ovs_ofctl("del-flow %s ip,nw_dst=%s" % (self.short_name, lif_ip_mask))
+            ovs_ofctl("del-flow %s ip,nw_dst=%s" % (self.short_name,
+                      lif_ip_mask))
 
     def update_forwarding_macs(self):
         # update lif macs
-        lif_pl_uuid = vtep_ctl("--columns=_uuid find Physical_Locator dst_ip=127.0.0.1").partition(":")[2].strip()
+        lif_pl_uuid = vtep_ctl("--columns=_uuid find Physical_Locator "
+                               "dst_ip=127.0.0.1").partition(":")[2].strip()
 
         new_dst_ips = set()
         for switch_binding in Switch_Bindings.keys():
@@ -199,18 +207,28 @@ class Logical_Router(object):
             ls_uuid = get_logical_switch_uuid(ls_name)
             lif_port = lif.strip("\"").partition("(")[0].strip() + "-r"
 
-            new_dst_ips = new_dst_ips | self.update_forward_macs_by_table(ls_uuid, lif_pl_uuid, "Ucast_Macs_Local", lif_port)
-            new_dst_ips = new_dst_ips | self.update_forward_macs_by_table(ls_uuid, lif_pl_uuid, "Ucast_Macs_Remote", lif_port)
+            new_dst_ips = new_dst_ips | self.update_forward_macs_by_table(
+                          ls_uuid,
+                          lif_pl_uuid,
+                          "Ucast_Macs_Local",
+                          lif_port)
+            new_dst_ips = new_dst_ips | self.update_forward_macs_by_table(
+                          ls_uuid,
+                          lif_pl_uuid,
+                          "Ucast_Macs_Remote",
+                          lif_port)
 
         dead_ips = set(self.dst_ips.keys()).difference(new_dst_ips)
         for ip in dead_ips:
             ovs_ofctl("del-flows %s ip,nw_dst=%s" % (self.short_name, ip))
-            ovs_ofctl("del-flows %s dl_dst=%s" % (self.short_name, self.dst_ips[ip]))
+            ovs_ofctl("del-flows %s dl_dst=%s" % (self.short_name,
+                                                  self.dst_ips[ip]))
             del self.dst_ips[ip]
 
-
-    def update_forward_macs_by_table(self, ls_uuid, lif_pl_uuid, table, lif_port):
-        columns = vtep_ctl("--columns=locator find %s logical_switch=%s" % (table, ls_uuid)).splitlines()
+    def update_forward_macs_by_table(self, ls_uuid, lif_pl_uuid, table,
+                                     lif_port):
+        columns = vtep_ctl("--columns=locator find %s "
+                           "logical_switch=%s" % (table, ls_uuid)).splitlines()
         new_dst_ips = set()
 
         for column in columns:
@@ -221,7 +239,9 @@ class Logical_Router(object):
             if pl_uuid == lif_pl_uuid:
                 continue
 
-            ipaddr_lines = vtep_ctl("--columns=ipaddr find %s logical_switch=%s locator=%s" % (table, ls_uuid, pl_uuid)).splitlines()
+            ipaddr_lines = vtep_ctl("--columns=ipaddr find %s "
+                                    "logical_switch=%s locator=%s"
+                                    % (table, ls_uuid, pl_uuid)).splitlines()
             for ipaddr_line in ipaddr_lines:
                 ipaddr = ipaddr_line.partition(":")[2].strip()
                 if not ipaddr:
@@ -231,21 +251,25 @@ class Logical_Router(object):
                 new_dst_ips.add(dst_ip)
 
                 # get destination's mac address from table
-                column = vtep_ctl("--columns=MAC find %s logical_switch=%s ipaddr=%s"
-                                  % (table, ls_uuid, ipaddr))
+                column = vtep_ctl("--columns=MAC find %s logical_switch=%s"
+                                  "ipaddr=%s" % (table, ls_uuid, ipaddr))
                 dst_mac = column.partition(":")[2].strip()
 
                 if dst_ip in self.dst_ips.keys():
                     if self.dst_ips[dst_ip] == dst_mac:
                         continue
                     else:
-                        ovs_ofctl("del-flows %s ip,nw_dst=%s" % (self.short_name, dst_ip))
-                        ovs_ofctl("del-flows %s dl_dst=%s" % (self.short_name, self.dst_ips[dst_ip]))
+                        ovs_ofctl("del-flows %s ip,nw_dst=%s"
+                                  % (self.short_name, dst_ip))
+                        ovs_ofctl("del-flows %s dl_dst=%s"
+                                  % (self.short_name, self.dst_ips[dst_ip]))
                         del self.dst_ips[dst_ip]
 
                 self.dst_ips[dst_ip] = dst_mac
-                ovs_ofctl("add-flow %s table=3,priority=1000,dl_type=0x0800,nw_dst=%s,action=mod_dl_dst:%s,dec_ttl,output:%s"
-                          % (self.short_name, dst_ip, dst_mac, self.ports[lif_port]))
+                ovs_ofctl("add-flow %s table=3,priority=1000,dl_type=0x0800,"
+                          "nw_dst=%s,action=mod_dl_dst:%s,dec_ttl,output:%s"
+                          % (self.short_name, dst_ip, dst_mac,
+                             self.ports[lif_port]))
 
         return new_dst_ips
 
@@ -255,13 +279,15 @@ class Logical_Router(object):
 
         lr_name, lif = binding.split("-", 1)
         lif_port = lif.strip("\"").partition("(")[0].strip()
-        lif_port_r = lif_port+"-r"
-        lif_port_s = lif_port+"-s"
+        lif_port_r = lif_port + "-r"
+        lif_port_s = lif_port + "-s"
 
-        lif_ip = lif.strip("\"").partition("(")[2].partition("/")[0]
-        lif_ip_mask = lif.strip("\"").partition("(")[2].strip(")")
+        # TODO(mestery): Do we need these?
+        # lif_ip = lif.strip("\"").partition("(")[2].partition("/")[0]
+        # lif_ip_mask = lif.strip("\"").partition("(")[2].strip(")")
 
-        #Create a patch port that connects the Logical Switch to the Logical Router
+        # Create a patch port that connects the Logical Switch to the Logical
+        # Router
         ovs_vsctl("add-port %s %s "
                   " -- set Interface %s type=patch options:peer=%s"
                   % (ls.short_name, lif_port_s, lif_port_s, lif_port_r))
@@ -269,14 +295,17 @@ class Logical_Router(object):
                   " -- set Interface %s type=patch options:peer=%s"
                   % (self.short_name, lif_port_r, lif_port_r, lif_port_s))
 
-        port_s_no = ovs_vsctl("get Interface %s ofport" % lif_port_s)
-        port_r_no = ovs_vsctl("get Interface %s ofport" % lif_port_r)
+        # TODO(mestery): Do we need these?
+        # port_s_no = ovs_vsctl("get Interface %s ofport" % lif_port_s)
+        # port_r_no = ovs_vsctl("get Interface %s ofport" % lif_port_r)
 
         # create flow to switch to arp table whenever it is arp packet
-        #ovs_ofctl("add-flow %s table=0,priority=1000,dl_type=0x0806,actions=resubmit(,1)" % self.short_name)
+        # ovs_ofctl("add-flow %s table=0,priority=1000,dl_type=0x0806,
+        #            actions=resubmit(,1)" % self.short_name)
 
         # create flow to switch to routing table for other packets
-        ovs_ofctl("add-flow %s table=0,priority=1,actions=resubmit(,2)" % self.short_name)
+        ovs_ofctl("add-flow %s table=0,priority=1,actions=resubmit(,2)"
+                  % self.short_name)
 
         ls.add_lbinding(lif_port_s)
         self.add_lbinding(lif_port_r)
@@ -297,13 +326,16 @@ class Logical_Router(object):
     def del_lbinding(self, lbinding, lif):
         vlog.info("removing %s binding from %s" % (lbinding, self.name))
         port_no = self.ports[lbinding]
-        ovs_ofctl("del-flows %s in_port=%s" % (self.short_name, port_no));
+        ovs_ofctl("del-flows %s in_port=%s" % (self.short_name, port_no))
         del self.ports[lbinding]
         self.update_flood()
 
         lif_ip_mask = lif.strip("\"").partition("(")[2].strip(")")
-        ovs_ofctl("del-flows %s ip,nw_dst=%s" % (self.short_name, lif_ip_mask));
-        ovs_ofctl("del-flows %s arp,arp_tpa=%s" % (self.short_name, lif_ip_mask));
+        ovs_ofctl("del-flows %s ip,nw_dst=%s" % (self.short_name,
+                                                 lif_ip_mask))
+        ovs_ofctl("del-flows %s arp,arp_tpa=%s" % (self.short_name,
+                                                   lif_ip_mask))
+
 
 class Logical_Switch(object):
     def __init__(self, ls_name, ps_name):
@@ -348,9 +380,10 @@ class Logical_Switch(object):
         ovs_vsctl("br-set-external-id %s logical_switch_name %s"
                   % (self.short_name, self.name))
 
-        # since so far L3 local/remote macs are persisted in DB instead of querying by arp request, so keep from clean for now.
-        # will remove this limiation when arp resolution issue is solved
-        #vtep_ctl("clear-local-macs %s" % self.name)
+        # since so far L3 local/remote macs are persisted in DB instead of
+        # querying by arp request, so keep from clean for now. Will remove
+        # this limiation when arp resolution issue is solved
+        # vtep_ctl("clear-local-macs %s" % self.name)
         vtep_ctl("add-mcast-local %s unknown-dst %s" % (self.name, Tunnel_Ip))
 
         ovs_ofctl("del-flows %s" % self.short_name)
@@ -747,14 +780,15 @@ def run_bfd():
 
 
 def getHexIp(ip):
-    hexip ="0x"
+    hexip = "0x"
     for i in ip.split('.'):
         if int(i) < 16:
-            hexip += "0"+ hex(int(i))[2:]
+            hexip += "0" + hex(int(i))[2:]
         else:
             hexip += hex(int(i))[2:]
 
     return hexip
+
 
 def add_binding(binding, ls):
     vlog.info("adding binding %s" % binding)
@@ -815,6 +849,7 @@ def del_switch_binding(binding, ls):
 
     del Switch_Bindings[binding]
 
+
 def del_binding(binding, ls):
     vlog.info("removing binding %s" % binding)
 
@@ -850,10 +885,12 @@ def get_logical_switch_uuid(ls_name):
                       "name=%s" % ls_name)
     return column.partition(":")[2].strip()
 
+
 def get_switch_bindings():
     # get the total list of switch bindings from all routers
     New_Switch_Bindings = {}
-    binding_lines = set(vtep_ctl("--columns=switch_binding find Logical_Router").splitlines())
+    binding_lines = set(vtep_ctl("--columns=switch_binding find "
+                                 "Logical_Router").splitlines())
     for line in binding_lines:
         binding_line = line.partition(":")[2].strip().strip("{}")
         if not binding_line:
@@ -869,13 +906,16 @@ def get_switch_bindings():
         for binding in bindings:
             lif, ls_uuid = binding.split("=", 1)
             switch_binding = lr_name + "-" + lif.strip()
-            if New_Switch_Bindings.has_key(switch_binding):
-                ovs.util.ovs_fatal(0, "find duplicate lr-lif bindings (%s-%s)" % (lr_name, lif), vlog)
+            if switch_binding in New_Switch_Bindings:
+                ovs.util.ovs_fatal(0, "find duplicate lr-lif bindings (%s-%s)"
+                                   % (lr_name, lif), vlog)
 
-            ls_name = vtep_ctl("get Logical_Switch %s name" % ls_uuid).strip("\"")
+            ls_name = vtep_ctl("get Logical_Switch %s name"
+                               % ls_uuid).strip("\"")
             New_Switch_Bindings[switch_binding] = ls_name
 
     return New_Switch_Bindings
+
 
 def handle_physical():
     # Gather physical ports except the patch ports we created
@@ -928,11 +968,10 @@ def handle_physical():
             vtep_ctl("clear-local-macs %s" % Lswitches[ls_name].name)
             del Lswitches[ls_name]
 
-
     # update logical router
     new_switch_bindings = get_switch_bindings()
     for b in new_switch_bindings:
-        lr_name, lif = b.split("-",1)
+        lr_name, lif = b.split("-", 1)
         ls_name = new_switch_bindings[b]
 
         if lr_name not in Lrouters:
@@ -946,18 +985,20 @@ def handle_physical():
         lr = Lrouters[lr_name]
         ls = Lswitches[ls_name]
 
-        if Switch_Bindings.has_key(b):
+        if b in Switch_Bindings:
             if Switch_Bindings[b] == ls_name:
                 continue
             else:
-                del_switch_binding(switch_binding, Lswitches[Switch_Bindings[b]])
+                del_switch_binding(switch_binding,
+                                   Lswitches[Switch_Bindings[b]])
 
         Switch_Bindings[b] = ls_name
         lr.add_switch_binding(b, ls)
 
-    dead_bindings = set(Switch_Bindings.keys()).difference(new_switch_bindings.keys())
+    dead_bindings = set(Switch_Bindings.keys()).difference(
+                    new_switch_bindings.keys())
     for binding in dead_bindings:
-        lr_name, lif = binding.split("-",1)
+        lr_name, lif = binding.split("-", 1)
         ls_name = Switch_Bindings[binding]
 
         ls = Lswitches[ls_name]
@@ -974,6 +1015,7 @@ def handle_physical():
             ovs_vsctl("del-br %s" % lr.short_name)
             vtep_ctl("clear-local-macs %s" % lr.name)
             del Lrouters[lr_name]
+
 
 def setup():
     br_list = ovs_vsctl("list-br").split()
