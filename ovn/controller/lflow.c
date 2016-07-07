@@ -323,7 +323,8 @@ static void consider_logical_flow(const struct lport_index *lports,
                                   const struct simap *ct_zones,
                                   struct hmap *dhcp_opts_p,
                                   uint32_t *conj_id_ofs_p,
-                                  struct hmap *flow_table);
+                                  struct hmap *flow_table,
+                                  const char* chassis_id);
 
 static bool
 lookup_port_cb(const void *aux_, const char *port_name, unsigned int *portp)
@@ -361,7 +362,8 @@ add_logical_flows(struct controller_ctx *ctx, const struct lport_index *lports,
                   const struct hmap *local_datapaths,
                   const struct hmap *patched_datapaths,
                   struct group_table *group_table,
-                  const struct simap *ct_zones, struct hmap *flow_table)
+                  const struct simap *ct_zones, struct hmap *flow_table,
+                  const char* chassis_id)
 {
     uint32_t conj_id_ofs = 1;
 
@@ -376,7 +378,8 @@ add_logical_flows(struct controller_ctx *ctx, const struct lport_index *lports,
     SBREC_LOGICAL_FLOW_FOR_EACH (lflow, ctx->ovnsb_idl) {
         consider_logical_flow(lports, mcgroups, lflow, local_datapaths,
                               patched_datapaths, group_table, ct_zones,
-                              &dhcp_opts, &conj_id_ofs, flow_table);
+                              &dhcp_opts, &conj_id_ofs, flow_table,
+                              chassis_id);
     }
 
     dhcp_opts_destroy(&dhcp_opts);
@@ -392,7 +395,8 @@ consider_logical_flow(const struct lport_index *lports,
                       const struct simap *ct_zones,
                       struct hmap *dhcp_opts_p,
                       uint32_t *conj_id_ofs_p,
-                      struct hmap *flow_table)
+                      struct hmap *flow_table,
+                      const char* chassis_id)
 {
     /* Determine translation of logical table IDs to physical table IDs. */
     bool ingress = !strcmp(lflow->pipeline, "ingress");
@@ -433,6 +437,30 @@ consider_logical_flow(const struct lport_index *lports,
         if (!get_local_datapath(local_datapaths, ldp->tunnel_key)) {
             if (!get_patched_datapath(patched_datapaths,
                                       ldp->tunnel_key)) {
+                return;
+            }
+        }
+
+        /* Skip logical flow when it has an 'inport' or 'outport' to match,
+         * and the port is a VM or VIF interface, but not a local port to
+         * current chassis. */
+        if (strstr(lflow->match, "inport")
+                || strstr(lflow->match, "outport")) {
+            struct lexer lexer;
+            lexer_init(&lexer, lflow->match);
+            do {
+                lexer_get(&lexer);
+            } while (lexer.token.type != LEX_T_ID
+                     || (strcmp(lexer.token.s, "inport")
+                         && strcmp(lexer.token.s, "outport")));
+            /* Skip "==", then get logical port name. */
+            lexer_get(&lexer);
+            lexer_get(&lexer);
+            const struct sbrec_port_binding *pb
+                = lport_lookup_by_name(lports, lexer.token.s);
+            lexer_destroy(&lexer);
+            if (pb && pb->chassis && !strcmp(pb->type, "")
+                    && strcmp(chassis_id, pb->chassis->name)){
                 return;
             }
         }
@@ -627,11 +655,13 @@ lflow_run(struct controller_ctx *ctx, const struct lport_index *lports,
           const struct hmap *local_datapaths,
           const struct hmap *patched_datapaths,
           struct group_table *group_table,
-          const struct simap *ct_zones, struct hmap *flow_table)
+          const struct simap *ct_zones, struct hmap *flow_table,
+          const char* chassis_id)
 {
     update_address_sets(ctx);
     add_logical_flows(ctx, lports, mcgroups, local_datapaths,
-                      patched_datapaths, group_table, ct_zones, flow_table);
+                      patched_datapaths, group_table, ct_zones, flow_table,
+                      chassis_id);
     add_neighbor_flows(ctx, lports, flow_table);
 }
 

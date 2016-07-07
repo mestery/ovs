@@ -66,7 +66,8 @@ void lflow_run(struct controller_ctx *, const struct lport_index *,
                const struct hmap *patched_datapaths,
                struct group_table *group_table,
                const struct simap *ct_zones,
-               struct hmap *flow_table);
+               struct hmap *flow_table,
+               const char* chassis_id);
 void lflow_destroy(void);
 
 #endif /* ovn/lflow.h */
