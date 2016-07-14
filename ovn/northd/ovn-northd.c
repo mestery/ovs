@@ -2938,7 +2938,8 @@ ovnsb_db_run(struct northd_context *ctx)
         hmap_insert(&lports_hmap, &hash_node->node, hash_string(nb->name, 0));
     }
 
-    SBREC_PORT_BINDING_FOR_EACH(sb, ctx->ovnsb_idl) {
+    SBREC_PORT_BINDING_FOR_EACH_TRACKED (sb, ctx->ovnsb_idl) {
+    // SBREC_PORT_BINDING_FOR_EACH(sb, ctx->ovnsb_idl) {
         nb = NULL;
         HMAP_FOR_EACH_WITH_HASH(hash_node, node,
                                 hash_string(sb->logical_port, 0),
@@ -3139,7 +3140,7 @@ main(int argc, char *argv[])
     add_column_noalert(ovnsb_idl_loop.idl, &sbrec_port_binding_col_type);
     add_column_noalert(ovnsb_idl_loop.idl, &sbrec_port_binding_col_options);
     add_column_noalert(ovnsb_idl_loop.idl, &sbrec_port_binding_col_mac);
-    ovsdb_idl_add_column(ovnsb_idl_loop.idl, &sbrec_port_binding_col_chassis);
+    ovsdb_idl_track_add_column(ovnsb_idl_loop.idl, &sbrec_port_binding_col_chassis);
 
     ovsdb_idl_add_table(ovnsb_idl_loop.idl, &sbrec_table_address_set);
     add_column_noalert(ovnsb_idl_loop.idl, &sbrec_address_set_col_name);
@@ -3165,6 +3166,7 @@ main(int argc, char *argv[])
         }
         ovsdb_idl_loop_commit_and_wait(&ovnnb_idl_loop);
         ovsdb_idl_loop_commit_and_wait(&ovnsb_idl_loop);
+        ovsdb_idl_track_clear(ctx.ovnsb_idl);
 
         poll_block();
         if (should_service_stop()) {
