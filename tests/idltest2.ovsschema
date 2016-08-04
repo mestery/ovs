@@ -109,6 +109,20 @@
           }
         }
       }
+    },
+    "simple3" : {
+      "columns" : {
+        "name" : {
+          "type": "string"
+        },
+        "uset": {
+          "type": {
+             "key": {"type": "uuid"},
+             "min": 0,
+             "max": "unlimited"
+          }
+        }
+      }
     }
   }
 }
