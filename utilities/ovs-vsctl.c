@@ -2483,7 +2483,7 @@ vsctl_parent_process_info(void)
 
     f = fopen(procfile, "r");
     if (!f) {
-        VLOG_WARN("%s: open failed (%s)", procfile, ovs_strerror(errno));
+        VLOG_DBG("%s: open failed (%s)", procfile, ovs_strerror(errno));
         free(procfile);
         return NULL;
     }
